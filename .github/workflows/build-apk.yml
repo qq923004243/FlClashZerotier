@@ -1,0 +1,67 @@
+name: Build APK (FlClashTier)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Build target ABI'
+        required: true
+        default: 'arm64-v8a'
+        type: choice
+        options:
+          - arm64-v8a
+          - all-abi
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: "Guard: no legacy package name leftovers"
+        # 2026-08-16: rebrand 漏改 proguard-rules.pro → R8 混淆 Gson 模型类 →
+        # VPN 授权静默失效。这类"改名漏网"必须机器检查，任何旧包名残留直接 fail。
+        run: |
+          leftovers=$(grep -rn "com\.follow\.clash" --include="*.kt" --include="*.java" --include="*.xml" --include="*.aidl" --include="*.yaml" --include="*.yml" --include="*.gradle" --include="*.kts" --include="*.pro" --include="*.dart" --include="*.cpp" --include="*.h" android/ lib/ plugins/ 2>/dev/null | grep -v "/build/" | grep -v "GeneratedPluginRegistrant" || true)
+          if [ -n "$leftovers" ]; then
+            echo "::error::Legacy package name 'com.follow.clash' found (rebrand incomplete). Fix all files including *.pro (proguard keep rules) before release."
+            echo "$leftovers"
+            exit 1
+          fi
+          echo "OK: no legacy package name leftovers"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.47.0'
+          cache: true
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+
+      - name: Install Android NDK r28c (28.2.13676358)
+        run: |
+          yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --install "ndk;28.2.13676358" --sdk_root=${ANDROID_HOME} > /dev/null 2>&1
+          test -d ${ANDROID_HOME}/ndk/28.2.13676358 && echo "NDK installed: ${ANDROID_HOME}/ndk/28.2.13676358" || (echo "NDK install failed"; exit 1)
+          echo "ANDROID_NDK=${ANDROID_HOME}/ndk/28.2.13676358" >> "$GITHUB_ENV"
+
+      - name: Build APK
+        run: |
+          if [ "${{ github.event.inputs.target }}" = "all-abi" ]; then
+            flutter build apk --release
+          else
+            flutter build apk --release --target-platform android-arm64
+          fi
+          ls -lh build/app/outputs/flutter-apk/
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: flclashtier-apk
+          path: build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
