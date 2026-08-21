@@ -34,6 +34,27 @@ Android VpnService
 - ZeroTier 物理 UDP socket 经 `VpnService.protect()` 绕过 TUN，防止环路
 - ZT 边界做 SNAT/DNAT（TUN 网段在 ZT 网络内不可路由）
 
+## 路由模式（四种，单选）
+
+设置 → ZeroTier → 「路由模式」单选，重启 VPN 生效：
+
+| 模式 | 行为 | 典型场景 |
+|---|---|---|
+| 纯 Clash | 不启动 ZeroTier，行为与原版 FlClash 完全一致 | 只要代理 |
+| 纯 ZeroTier | 全部流量优先走 ZeroTier（需 ZT 网络下发默认路由/出口）；ZT 未覆盖的流量直连，不经 Clash 代理 | 全内网隧道 |
+| 共存互不影响（默认） | 命中 ZeroTier Managed Routes 的流量走 ZT 内网，其余流量交给 Clash 规则处理 | 双出口并行 |
+| Clash 走 ZeroTier | 先由 Clash 规则决定去向，出站目标（代理服务器/直连目标）若命中 ZT 内网路由则改经 ZeroTier 承载 | **通过 ZT 内网连接部署在局域网里的 Clash 节点** |
+
+「Clash 走 ZeroTier」解决一个常见痛点：Clash 节点部署在 ZeroTier 组网内的
+局域网设备（如 `192.168.x.x`）上，人不在同一局域网时代理永远连不上。
+开启该模式后，Clash 的出站拨号会自动改走 ZeroTier 内网，内网节点即可
+正常测速、正常使用：
+
+<div align="center">
+<img src="snapshots/clash-over-zerotier-proxies.jpg" width="300" alt="Clash 走 ZeroTier：内网节点可测速可用" />
+<img src="snapshots/zerotier-route-mode-settings.jpg" width="300" alt="路由模式选择页" />
+</div>
+
 ## 私有 Planet（自建 ZeroTier 根服务器）
 
 与多数集成方案不同，FlClashTier **不强制使用 ZeroTier 官方公共服务**。如果你的
@@ -54,19 +75,22 @@ ZeroTier 网络部署在自建 planet（自托管根服务器，例如自建的 
 ```json
 {
   "network-id": "你的16位十六进制网络ID",
+  "route-mode": "clash-over-zerotier",
   "use-custom-planet": true
 }
 ```
 
+`route-mode` 取值：`clash` / `zerotier` / `coexist`（默认）/ `clash-over-zerotier`。
 planet 文件保存在 `HomeDir/zerotier-planet.custom`。
 清空 `network-id` 即完全禁用 ZeroTier，回到纯 Mihomo 模式。
 
 ## 使用步骤
 
 1. 在「配置文件」页导入 Clash 订阅/配置（首页出现启动按钮的前提）
-2. 在「设置 → ZeroTier」填写 Network ID（自建网络还需导入私有 planet）
-3. 启动 VPN 并在控制器（ZeroTier Central 或自建控制器）授权本节点
-4. 修改配置后重启 VPN 生效
+2. 在「设置 → ZeroTier」选择路由模式（内网节点场景选「Clash 走 ZeroTier」）
+3. 填写 Network ID（自建网络还需导入私有 planet）
+4. 启动 VPN 并在控制器（ZeroTier Central 或自建控制器）授权本节点
+5. 修改配置后重启 VPN 生效
 
 命中 ZeroTier Managed Routes 网段的流量走 ZT 内网（可直接访问组网内设备），
 其余流量照旧走 Mihomo 规则。注意：ZT 内网访问建议直接用 IP（DNS 解析受
@@ -87,7 +111,8 @@ make core-android ARCH=arm64
 flutter build apk --release
 ```
 
-仓库内置 GitHub Actions（`.github/workflows`），推送到 main 后自动产出 APK。
+仓库内置 GitHub Actions（`.github/workflows`）：推送 `v*` tag 自动构建 APK
+并发布到 GitHub Releases，也可在 Actions 页手动触发（可选 arm64-v8a / 全 ABI）。
 
 ## 致谢与上游
 
