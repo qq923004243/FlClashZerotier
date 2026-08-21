@@ -14,20 +14,40 @@ const RouteFlagActive = 0x0001
 // Design decision (M1): a 0.0.0.0/0 (or ::/0) managed route would route ALL
 // traffic to ZeroTier and starve mihomo. In this dual-exit app such a route
 // is an operator misconfiguration: it is ignored with a one-time warning.
+// EXCEPTION: the pure-ZeroTier route mode explicitly wants full-tunnel
+// behavior, so the engine can re-enable default routes via SetAllowDefault.
 type RouteTable struct {
 	mu            sync.RWMutex
 	routes        []Route
+	allowDefault  bool
 	warnedDefault bool
 }
 
 // NewRouteTable returns an empty route table.
 func NewRouteTable() *RouteTable { return &RouteTable{} }
 
-// Set replaces the route set. Default routes are filtered out.
+// SetAllowDefault controls whether 0.0.0.0/0 (::/0) managed routes are
+// honored. Must be set before the first Set; the engine does this at
+// construction time based on the configured route mode.
+func (t *RouteTable) SetAllowDefault(allow bool) {
+	t.mu.Lock()
+	t.allowDefault = allow
+	t.mu.Unlock()
+}
+
+// Set replaces the route set. Default routes are filtered out unless
+// explicitly allowed.
 func (t *RouteTable) Set(routes []Route) {
+	t.mu.Lock()
+	allowDefault := t.allowDefault
+	t.mu.Unlock()
 	keep := make([]Route, 0, len(routes))
 	for _, r := range routes {
 		if r.Prefix.Bits() == 0 {
+			if allowDefault {
+				keep = append(keep, r)
+				continue
+			}
 			if !t.warnedDefault {
 				t.warnedDefault = true
 				Warnf("[ZT] ignoring default managed route (0.0.0.0/0 or ::/0): routing everything via ZeroTier would starve mihomo")

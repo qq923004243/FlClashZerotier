@@ -68,9 +68,22 @@ func Start(fd int, stack string, address, dns string, protect func(int)) *sing_t
 	}
 
 	home := constant.Path.HomeDir()
-	if cfg, err := zerotier.LoadConfig(home); err != nil {
-		log.Warnln("TUN zerotier config:", err)
+	// FlClashTier 路由模式（单选）：
+	//   clash              不启动 ZT 引擎，纯 mihomo（与原版 FlClash 一致）
+	//   zerotier           纯 ZeroTier（含 ZT 默认路由），回落流量强制直连
+	//   coexist            共存互不影响（默认）：ZT 路由命中走 ZT，其余走 mihomo
+	//   clash-over-zerotier 同共存，且 mihomo 出站命中 ZT 路由时改走 ZT（见 lib.go socket hook）
+	ztMode := zerotier.RouteModeClash
+	cfg, cfgErr := zerotier.LoadConfig(home)
+	if cfgErr != nil {
+		log.Warnln("TUN zerotier config:", cfgErr)
 	} else if cfg.Enabled() {
+		ztMode = cfg.RouteMode
+	}
+	// 发布给拨号侧（socket hook）实时查询；禁用/纯 Clash 时为 clash。
+	zerotier.SetActiveRouteMode(ztMode)
+
+	if cfg != nil && cfg.Enabled() && ztMode != zerotier.RouteModeClash {
 		// P0-3: FlClash 的 TUN 拆除是异步的——handleStopTun 关闭 sing_tun
 		// listener 后，flowRouter 的 mihomoLoop 才从 goroutine 里触发
 		// eng.Stop()。若新 StartEngine 抢先执行，会幂等拿到 RUNNING 的旧
@@ -86,7 +99,7 @@ func Start(fd int, stack string, address, dns string, protect func(int)) *sing_t
 		} else {
 			dp = fr
 			mihomoFd = fr.mihomoFd
-			log.Infoln("TUN: ZeroTier flow router active (network %s)", cfg.NetworkID)
+			log.Infoln("TUN: ZeroTier flow router active (network %s route-mode %s)", cfg.NetworkID, ztMode)
 		}
 	}
 	if mihomoFd == 0 {

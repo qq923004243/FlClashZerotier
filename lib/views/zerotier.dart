@@ -32,10 +32,17 @@ class _ZeroTierViewState extends ConsumerState<ZeroTierView> {
   /// Planet 文件头校验：world type 0x01 = planet（0x02 = moon）。
   static const int _planetMaxBytes = 8192;
 
+  /// 路由模式取值（写入 zerotier.json 的 route-mode，与 Go core 一一对应）。
+  static const String _modeClash = 'clash';
+  static const String _modeZerotier = 'zerotier';
+  static const String _modeCoexist = 'coexist';
+  static const String _modeClashOverZerotier = 'clash-over-zerotier';
+
   final _controller = TextEditingController();
   Timer? _debounce;
   String _status = '';
 
+  String _routeMode = _modeCoexist;
   bool _useCustomPlanet = false;
   int _planetFileSize = -1; // -1 = 未导入
   bool _planetBusy = false;
@@ -101,6 +108,7 @@ class _ZeroTierViewState extends ConsumerState<ZeroTierView> {
     final cfg = await _readConfig();
     final nwid = ((cfg['network-id'] as String?) ?? '').trim();
     final planet = await _planetFile();
+    _routeMode = _normalizeMode(cfg['route-mode'] as String?);
     _useCustomPlanet = (cfg['use-custom-planet'] as bool?) ?? false;
     _planetFileSize = await planet.exists() ? await planet.length() : -1;
     _controller.text = nwid;
@@ -108,6 +116,30 @@ class _ZeroTierViewState extends ConsumerState<ZeroTierView> {
         ? 'ZeroTier disabled (mihomo only)'
         : 'ZeroTier network: $nwid';
     if (mounted) setState(() {});
+  }
+
+  /// 归一化 route-mode；未知/缺失值回落默认的共存模式（与 Go core 一致）。
+  String _normalizeMode(String? value) {
+    switch (value) {
+      case _modeClash:
+      case _modeZerotier:
+      case _modeClashOverZerotier:
+        return value!;
+      default:
+        return _modeCoexist;
+    }
+  }
+
+  Future<void> _saveRouteMode(String value) async {
+    try {
+      await _writeConfig({'route-mode': value});
+      _routeMode = value;
+      _status = '路由模式已保存 — restart VPN to apply';
+      if (mounted) setState(() {});
+    } catch (err) {
+      _status = 'save failed: $err';
+      if (mounted) setState(() {});
+    }
   }
 
   Future<void> _saveNwid(String value) async {
@@ -322,8 +354,9 @@ class _ZeroTierViewState extends ConsumerState<ZeroTierView> {
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
             child: Text(
-              'ZeroTier 网络互联：配置 Network ID 后，命中 ZeroTier '
-              'Managed Routes 的流量走 ZeroTier 内网，其余流量走 mihomo。',
+              'ZeroTier 网络互联：先在下方选择路由模式，再配置 Network ID。'
+              '不同模式决定流量在 ZeroTier 与 Clash 之间的分工，'
+              '改动后重启 VPN 生效。',
               style: theme.textTheme.bodySmall,
             ),
           ),
@@ -358,6 +391,62 @@ class _ZeroTierViewState extends ConsumerState<ZeroTierView> {
                 ],
               ],
             ),
+          ),
+          const Divider(height: 24),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+            child: Text(
+              '路由模式（单选）',
+              style: theme.textTheme.titleSmall,
+            ),
+          ),
+          RadioListTile<String>(
+            title: const Text('纯 Clash'),
+            subtitle: const Text(
+              '不启动 ZeroTier，行为与原版 FlClash 完全一致。',
+            ),
+            value: _modeClash,
+            groupValue: _routeMode,
+            onChanged: (value) {
+              if (value != null) _saveRouteMode(value);
+            },
+          ),
+          RadioListTile<String>(
+            title: const Text('纯 ZeroTier'),
+            subtitle: const Text(
+              '全部流量优先走 ZeroTier（需 ZT 网络下发默认路由/出口）；'
+              'ZT 未覆盖的流量直连，不经 Clash 代理。',
+            ),
+            value: _modeZerotier,
+            groupValue: _routeMode,
+            onChanged: (value) {
+              if (value != null) _saveRouteMode(value);
+            },
+          ),
+          RadioListTile<String>(
+            title: const Text('共存互不影响（默认）'),
+            subtitle: const Text(
+              '命中 ZeroTier Managed Routes 的流量走 ZT 内网，'
+              '其余流量交给 Clash 规则处理，两者互不干涉。',
+            ),
+            value: _modeCoexist,
+            groupValue: _routeMode,
+            onChanged: (value) {
+              if (value != null) _saveRouteMode(value);
+            },
+          ),
+          RadioListTile<String>(
+            title: const Text('Clash 走 ZeroTier'),
+            subtitle: const Text(
+              '先由 Clash 规则决定去向，出站目标（代理服务器/直连目标）'
+              '若命中 ZT 内网路由则改经 ZeroTier 承载——用于通过 ZT '
+              '内网连接部署在局域网里的 Clash 节点。',
+            ),
+            value: _modeClashOverZerotier,
+            groupValue: _routeMode,
+            onChanged: (value) {
+              if (value != null) _saveRouteMode(value);
+            },
           ),
           const Divider(height: 24),
           Padding(
@@ -424,8 +513,8 @@ class _ZeroTierViewState extends ConsumerState<ZeroTierView> {
             '4. 启动 VPN（首次会弹出系统授权），然后在控制器上授权本机节点。',
           ),
           const _StepText(
-            '5. 修改 Network ID / Planet 后需重启 VPN 才生效；'
-            '清空 Network ID 后为纯 mihomo 模式。',
+            '5. 修改 Network ID / Planet / 路由模式后需重启 VPN 才生效；'
+            '路由模式选「纯 Clash」或清空 Network ID 后为纯 mihomo 模式。',
           ),
         ],
       ),

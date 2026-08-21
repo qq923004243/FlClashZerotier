@@ -20,6 +20,7 @@ import (
 	"github.com/metacubex/mihomo/dns"
 	"github.com/metacubex/mihomo/listener/sing_tun"
 	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/tunnel"
 	"golang.org/x/sync/semaphore"
 	"net"
 	"strings"
@@ -56,6 +57,7 @@ func (th *TunHandler) start(fd int, stack, address, dns string) {
 	defer th.limit.Release(4)
 	th.initHook()
 	tunListener := t.Start(fd, stack, address, dns, th.protectFd)
+	syncZerotierTunnelMode(tunListener != nil)
 	if tunListener != nil {
 		log.Infoln("TUN address: %v", tunListener.Address())
 		th.listener = tunListener
@@ -128,6 +130,12 @@ func (th *TunHandler) initHook() {
 		if platform.ShouldBlockConnection() {
 			return errBlocked
 		}
+		// clash-over-zerotier：拨号目标命中 ZT 内网路由时不 protect，
+		// 让该 socket 的流量进 TUN，由 flowRouter 分流到 ZeroTier；
+		// 若 protect 了会直接走物理网卡，内网节点永远不可达。
+		if zerotier.DialViaTunnel(network, address) {
+			return nil
+		}
 		return conn.Control(func(fd uintptr) {
 			tunHandler.handleProtect(int(fd))
 		})
@@ -150,7 +158,38 @@ var (
 	tunLock    sync.Mutex
 	errBlocked = errors.New("blocked")
 	tunHandler *TunHandler
+
+	// ztForcedDirect 标记纯 ZeroTier 模式是否把 tunnel 强制成了 Direct，
+	// 退出该模式/TUN 关闭时用来还原配置文件里的 mode。
+	ztForcedDirect bool
 )
+
+// syncZerotierTunnelMode 按当前路由模式校正 mihomo 的 tunnel mode：
+// 纯 ZeroTier 模式下，ZT 未覆盖的回落流量必须直连（不走代理链）；
+// 切出该模式或 TUN 关闭时还原配置文件声明的 mode。调用方需持有 runLock。
+func syncZerotierTunnelMode(tunActive bool) {
+	mode := zerotier.RouteModeClash
+	if tunActive {
+		if cfg, err := zerotier.LoadConfig(constant.Path.HomeDir()); err == nil && cfg.Enabled() {
+			mode = cfg.RouteMode
+		}
+	}
+	if mode == zerotier.RouteModeZerotier {
+		if !ztForcedDirect {
+			tunnel.SetMode(tunnel.Direct)
+			ztForcedDirect = true
+			log.Infoln("[ZT] route mode zerotier: fallback traffic forced DIRECT")
+		}
+		return
+	}
+	if ztForcedDirect {
+		ztForcedDirect = false
+		if currentConfig != nil {
+			tunnel.SetMode(currentConfig.General.Mode)
+			log.Infoln("[ZT] tunnel mode restored to %v", currentConfig.General.Mode)
+		}
+	}
+}
 
 func handleStopTun() {
 	tunLock.Lock()
@@ -158,6 +197,7 @@ func handleStopTun() {
 	if tunHandler != nil {
 		tunHandler.close()
 	}
+	syncZerotierTunnelMode(false)
 }
 
 func handleStartTun(callback unsafe.Pointer, fd int, stack, address, dns string) {

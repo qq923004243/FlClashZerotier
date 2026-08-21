@@ -124,6 +124,37 @@ type Engine struct {
 
 // ---- global singleton (mirrors the C wrapper's global s_node) ----
 
+// CoversAddr reports whether the active RUNNING engine's managed routes
+// cover addr. Safe to call from any goroutine; false when no engine runs.
+func CoversAddr(addr netip.Addr) bool {
+	e := currentEngine()
+	if e == nil || e.getState() != StateRunning {
+		return false
+	}
+	return e.Ready() && e.MatchRoute(addr) != nil
+}
+
+// DialViaTunnel decides whether a mihomo outbound dial (proxy server or
+// DIRECT target) must skip VpnService.protect so its traffic re-enters the
+// TUN and gets routed into the ZeroTier network by the flow router. This is
+// the clash-over-zerotier mode hook: only IP-literal destinations covered
+// by ZT managed routes qualify (domain destinations are resolved by mihomo
+// before dialing, so they normally arrive here as IPs).
+func DialViaTunnel(network, address string) bool {
+	if ActiveRouteMode() != RouteModeClashOverZerotier {
+		return false
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return CoversAddr(addr)
+}
+
 var (
 	globalEngineMu sync.Mutex
 	globalEngine   *Engine // non-nil while an Engine exists (any state)
@@ -254,6 +285,9 @@ func StartEngine(cfg Config, protect func(int), homeDir string) (*Engine, error)
 		routes:  NewRouteTable(),
 		frames:  make(chan Frame, frameChannelCap),
 	}
+	// 纯 ZeroTier 模式需要全隧道：放行 ZT 下发的默认路由（0.0.0.0/0）。
+	// 其余模式下默认路由仍被丢弃，避免把 mihomo 的流量全部抢走。
+	e.routes.SetAllowDefault(cfg.RouteMode == RouteModeZerotier)
 	setGlobalEngine(e)
 	globalEngineMu.Unlock()
 

@@ -47,6 +47,10 @@ jobs:
         with:
           go-version: '1.26.x'
 
+      - name: Go unit tests (zerotier, no cgo)
+        working-directory: core
+        run: CGO_ENABLED=0 go test ./zerotier/
+
       - name: Install Android NDK r28c (28.2.13676358)
         run: |
           yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --install "ndk;28.2.13676358" --sdk_root=${ANDROID_HOME} > /dev/null 2>&1
